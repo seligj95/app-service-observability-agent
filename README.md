@@ -322,8 +322,8 @@ The MCP tools (executable calls) + Agent Skill (knowledge/prompts) work together
                                       ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                           MCP Server (Node.js)                           │
-│  Tools: get_app_info, check_diagnostics, query_logs, get_recent_logs,   │
-│         get_http_errors, get_slow_requests, get_deployments, etc.       │
+│  Tools: get_app_info, check_diagnostics, query_logs, get_recent_logs,    │
+│         get_http_errors, get_slow_requests, get_deployments, etc.        │
 └──────────────────────────────────────┬───────────────────────────────────┘
                                        │ Azure SDKs
           ┌────────────────────────────┼────────────────────────────────┐
