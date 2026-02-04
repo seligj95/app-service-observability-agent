@@ -230,6 +230,37 @@ export const tools: Tool[] = [
       required: ['timestamp'],
     },
   },
+
+  // Deployment diagnosis
+  {
+    name: 'diagnose_deployment',
+    description: 'Diagnose issues with a recent deployment. Correlates deployment time with platform logs, startup probes, container lifecycle, and first HTTP requests. Use this when an app fails after deployment.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        deploymentIndex: {
+          type: 'number',
+          description: 'Which deployment to diagnose (0 = most recent, 1 = second most recent, etc.). Default: 0',
+          default: 0,
+        },
+        windowMinutes: {
+          type: 'number',
+          description: 'Minutes after deployment to analyze (default: 10)',
+          default: 10,
+        },
+      },
+    },
+  },
+
+  // Logging setup check
+  {
+    name: 'check_logging_setup',
+    description: 'Check if logging is properly configured for this app\'s runtime. Detects the runtime (Node.js, Python, .NET, Java) and provides specific recommendations for improving log output.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
 ];
 
 /**
@@ -415,6 +446,289 @@ export async function executeTool(
 
       const result = await logAnalytics.query(workspaceId, query, 60);
       return formatLogQueryResult(result, `Events around ${args.timestamp}`).summary;
+    }
+
+    case 'diagnose_deployment': {
+      const context = requireAppContext();
+      const deploymentIndex = (args.deploymentIndex as number) || 0;
+      const windowMinutes = (args.windowMinutes as number) || 10;
+      
+      // Get deployment info
+      const deployments = await armClient.getDeployments(context, deploymentIndex + 1);
+      if (deployments.length <= deploymentIndex) {
+        return `Error: No deployment found at index ${deploymentIndex}. Only ${deployments.length} deployments available.`;
+      }
+      
+      const deployment = deployments[deploymentIndex];
+      const deployTime = new Date(deployment.startTime || deployment.endTime);
+      const endTime = new Date(deployTime.getTime() + windowMinutes * 60 * 1000);
+      
+      let result = `## Deployment Diagnosis\n\n`;
+      result += `**Deployment:** ${deployTime.toISOString()}\n`;
+      result += `**Status:** ${deployment.status || 'Unknown'}\n`;
+      result += `**Deployer:** ${deployment.deployer || 'N/A'}\n`;
+      result += `**Message:** ${deployment.message || 'N/A'}\n\n`;
+      
+      // Check if Log Analytics is available
+      const workspaceId = await getWorkspaceId(context, armClient);
+      
+      if (workspaceId) {
+        // Query platform logs for startup issues
+        const platformQuery = `AppServicePlatformLogs
+| where TimeGenerated between (datetime('${deployTime.toISOString()}') .. datetime('${endTime.toISOString()}'))
+| project TimeGenerated, Message
+| order by TimeGenerated asc`;
+        
+        const platformLogs = await logAnalytics.query(workspaceId, platformQuery, windowMinutes);
+        
+        // Query console logs for app errors
+        const consoleQuery = `AppServiceConsoleLogs
+| where TimeGenerated between (datetime('${deployTime.toISOString()}') .. datetime('${endTime.toISOString()}'))
+| project TimeGenerated, ResultDescription
+| order by TimeGenerated asc`;
+        
+        const consoleLogs = await logAnalytics.query(workspaceId, consoleQuery, windowMinutes);
+        
+        // Query HTTP logs for first requests
+        const httpQuery = `AppServiceHTTPLogs
+| where TimeGenerated between (datetime('${deployTime.toISOString()}') .. datetime('${endTime.toISOString()}'))
+| project TimeGenerated, CsMethod, CsUriStem, ScStatus, TimeTaken
+| order by TimeGenerated asc
+| take 20`;
+        
+        const httpLogs = await logAnalytics.query(workspaceId, httpQuery, windowMinutes);
+        
+        // Analyze platform logs
+        result += `### Platform Events (${platformLogs.rows?.length || 0} events)\n\n`;
+        if (platformLogs.rows && platformLogs.rows.length > 0) {
+          const startupEvents = platformLogs.rows.filter((r: any) => 
+            r.Message?.includes('start') || r.Message?.includes('probe') || r.Message?.includes('running')
+          );
+          const errorEvents = platformLogs.rows.filter((r: any) => 
+            r.Message?.toLowerCase().includes('error') || 
+            r.Message?.toLowerCase().includes('fail') ||
+            r.Message?.toLowerCase().includes('crash') ||
+            r.Message?.toLowerCase().includes('oom') ||
+            r.Message?.toLowerCase().includes('memory')
+          );
+          const terminateEvents = platformLogs.rows.filter((r: any) => 
+            r.Message?.includes('terminat') || r.Message?.includes('stop')
+          );
+          
+          if (errorEvents.length > 0) {
+            result += `⚠️ **Errors detected:**\n`;
+            for (const evt of errorEvents.slice(0, 5)) {
+              result += `- \`${evt.Message}\`\n`;
+            }
+            result += `\n`;
+          }
+          
+          if (startupEvents.length > 0) {
+            result += `**Startup sequence:**\n`;
+            for (const evt of startupEvents.slice(0, 5)) {
+              result += `- ${new Date(evt.TimeGenerated as string).toISOString()}: ${evt.Message}\n`;
+            }
+            result += `\n`;
+          }
+          
+          if (terminateEvents.length > 0) {
+            result += `**Container terminations:**\n`;
+            for (const evt of terminateEvents.slice(0, 3)) {
+              result += `- ${new Date(evt.TimeGenerated as string).toISOString()}: ${evt.Message}\n`;
+            }
+            result += `\n`;
+          }
+        } else {
+          result += `_No platform events found in this window._\n\n`;
+        }
+        
+        // Analyze console logs
+        result += `### Application Logs (${consoleLogs.rows?.length || 0} entries)\n\n`;
+        if (consoleLogs.rows && consoleLogs.rows.length > 0) {
+          const errorLogs = consoleLogs.rows.filter((r: any) => 
+            r.ResultDescription?.toLowerCase().includes('error') ||
+            r.ResultDescription?.toLowerCase().includes('exception') ||
+            r.ResultDescription?.toLowerCase().includes('fail')
+          );
+          
+          if (errorLogs.length > 0) {
+            result += `⚠️ **Application errors:**\n\`\`\`\n`;
+            for (const log of errorLogs.slice(0, 5)) {
+              result += `${log.ResultDescription}\n`;
+            }
+            result += `\`\`\`\n\n`;
+          } else {
+            result += `✅ No application errors detected.\n\n`;
+          }
+        } else {
+          result += `_No console output in this window._\n\n`;
+        }
+        
+        // Analyze HTTP logs
+        result += `### First HTTP Requests (${httpLogs.rows?.length || 0} requests)\n\n`;
+        if (httpLogs.rows && httpLogs.rows.length > 0) {
+          const errors = httpLogs.rows.filter((r: any) => r.ScStatus >= 500);
+          const successful = httpLogs.rows.filter((r: any) => r.ScStatus < 400);
+          
+          if (errors.length > 0) {
+            result += `⚠️ **HTTP 5xx errors:** ${errors.length}\n`;
+            for (const req of errors.slice(0, 5)) {
+              result += `- ${req.ScStatus} ${req.CsMethod} ${req.CsUriStem} (${req.TimeTaken}ms)\n`;
+            }
+            result += `\n`;
+          }
+          
+          if (successful.length > 0) {
+            result += `✅ **Successful requests:** ${successful.length}\n`;
+            const firstSuccess = successful[0];
+            result += `- First success: ${firstSuccess.CsMethod} ${firstSuccess.CsUriStem} at ${new Date(firstSuccess.TimeGenerated as string).toISOString()}\n\n`;
+          }
+        } else {
+          result += `_No HTTP requests in this window (app may not have received traffic yet)._\n\n`;
+        }
+        
+      } else {
+        result += `⚠️ Log Analytics not configured. Limited diagnosis available.\n\n`;
+        
+        // Fall back to Kudu logs
+        const kuduLogs = await kudu.getRecentLogs(context.appName, 100);
+        result += `### Recent Container Logs\n\n`;
+        if (kuduLogs.entries && kuduLogs.entries.length > 0) {
+          result += `\`\`\`\n${kuduLogs.entries.slice(0, 30).map(e => e.content).join('\n')}\n\`\`\`\n\n`;
+        }
+      }
+      
+      // Summary
+      result += `### Diagnosis Summary\n\n`;
+      result += `Analyzed ${windowMinutes} minutes after deployment at ${deployTime.toISOString()}.\n`;
+      result += `Use \`correlate_events\` with specific timestamps for deeper investigation.`;
+      
+      return result;
+    }
+
+    case 'check_logging_setup': {
+      const context = requireAppContext();
+      const appInfo = await armClient.getAppInfo(context);
+      const diagnostics = await armClient.getDiagnosticSettings(context);
+      
+      let result = `## Logging Setup Check\n\n`;
+      result += `**App:** ${appInfo.name}\n`;
+      
+      // Detect runtime
+      const runtime = appInfo.linuxFxVersion || appInfo.windowsFxVersion || appInfo.kind || 'unknown';
+      result += `**Runtime:** ${runtime}\n\n`;
+      
+      // Diagnostic settings status
+      result += `### Diagnostic Settings\n\n`;
+      if (diagnostics.enabled) {
+        result += `✅ Log Analytics: Enabled\n`;
+        result += `**Enabled categories:** ${diagnostics.categories.join(', ') || 'None'}\n\n`;
+        
+        const recommended = ['AppServiceHTTPLogs', 'AppServiceConsoleLogs', 'AppServicePlatformLogs', 'AppServiceAppLogs'];
+        const missing = recommended.filter(c => !diagnostics.categories.includes(c));
+        if (missing.length > 0) {
+          result += `⚠️ **Missing recommended categories:** ${missing.join(', ')}\n\n`;
+        }
+      } else {
+        result += `❌ Log Analytics: Not configured\n\n`;
+        result += `**Recommendation:** Enable diagnostic settings to send logs to Log Analytics for full debugging capability.\n\n`;
+        result += `\`\`\`bash\n`;
+        result += `az monitor diagnostic-settings create \\\n`;
+        result += `  --name "logs-to-la" \\\n`;
+        result += `  --resource "/subscriptions/{sub}/resourceGroups/${context.resourceGroup}/providers/Microsoft.Web/sites/${context.appName}" \\\n`;
+        result += `  --workspace "{workspace-id}" \\\n`;
+        result += `  --logs '[{"category":"AppServiceHTTPLogs","enabled":true},{"category":"AppServiceConsoleLogs","enabled":true},{"category":"AppServicePlatformLogs","enabled":true},{"category":"AppServiceAppLogs","enabled":true}]'\n`;
+        result += `\`\`\`\n\n`;
+      }
+      
+      // Runtime-specific recommendations
+      result += `### Runtime-Specific Recommendations\n\n`;
+      
+      const runtimeLower = runtime.toLowerCase();
+      
+      if (runtimeLower.includes('node')) {
+        result += `**Node.js detected**\n\n`;
+        result += `For best logging visibility:\n\n`;
+        result += `1. **Use console.log/console.error** — These write to stdout/stderr and are captured by App Service\n`;
+        result += `2. **Structured logging** — Consider using a library like \`pino\` or \`winston\` with JSON output:\n`;
+        result += `   \`\`\`javascript\n`;
+        result += `   const pino = require('pino');\n`;
+        result += `   const logger = pino({ level: process.env.LOG_LEVEL || 'info' });\n`;
+        result += `   logger.info({ userId: 123 }, 'User logged in');\n`;
+        result += `   \`\`\`\n`;
+        result += `3. **Set LOG_LEVEL** environment variable to control verbosity\n`;
+        result += `4. **Avoid** writing to files — use stdout/stderr instead\n\n`;
+        
+      } else if (runtimeLower.includes('python')) {
+        result += `**Python detected**\n\n`;
+        result += `Python logging requires explicit configuration to work well with App Service:\n\n`;
+        result += `1. **Configure the logging module** to output to stdout:\n`;
+        result += `   \`\`\`python\n`;
+        result += `   import logging\n`;
+        result += `   import sys\n`;
+        result += `   \n`;
+        result += `   logging.basicConfig(\n`;
+        result += `       level=logging.INFO,\n`;
+        result += `       format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',\n`;
+        result += `       handlers=[logging.StreamHandler(sys.stdout)]\n`;
+        result += `   )\n`;
+        result += `   \`\`\`\n`;
+        result += `2. **Gunicorn users**: Add \`--access-logfile -\` and \`--error-logfile -\` to log to stdout\n`;
+        result += `3. **Flask/Django**: Ensure app loggers also use StreamHandler\n`;
+        result += `4. **Set PYTHONUNBUFFERED=1** in app settings to prevent output buffering\n\n`;
+        result += `⚠️ **Common issue:** Python's default logging doesn't output anywhere visible. You must configure handlers.\n\n`;
+        
+      } else if (runtimeLower.includes('dotnet') || runtimeLower.includes('.net')) {
+        result += `**.NET detected**\n\n`;
+        result += `.NET has good default logging integration with App Service:\n\n`;
+        result += `1. **Use ILogger<T>** — Built-in and captured automatically:\n`;
+        result += `   \`\`\`csharp\n`;
+        result += `   public class MyService\n`;
+        result += `   {\n`;
+        result += `       private readonly ILogger<MyService> _logger;\n`;
+        result += `       public MyService(ILogger<MyService> logger) => _logger = logger;\n`;
+        result += `       public void DoWork() => _logger.LogInformation("Processing...");\n`;
+        result += `   }\n`;
+        result += `   \`\`\`\n`;
+        result += `2. **Configure log levels** in appsettings.json or via LOGGING__LOGLEVEL__DEFAULT\n`;
+        result += `3. **Enable Application Insights** for richer telemetry (add Microsoft.ApplicationInsights.AspNetCore)\n`;
+        result += `4. **For Console apps**, ensure you configure logging in Program.cs\n\n`;
+        
+      } else if (runtimeLower.includes('java')) {
+        result += `**Java detected**\n\n`;
+        result += `Java logging depends on your framework:\n\n`;
+        result += `1. **Spring Boot**: Configure in application.properties:\n`;
+        result += `   \`\`\`properties\n`;
+        result += `   logging.level.root=INFO\n`;
+        result += `   logging.pattern.console=%d{yyyy-MM-dd HH:mm:ss} - %msg%n\n`;
+        result += `   \`\`\`\n`;
+        result += `2. **Use SLF4J/Logback** and ensure logs go to stdout\n`;
+        result += `3. **Avoid file appenders** — use ConsoleAppender instead\n`;
+        result += `4. **Set JAVA_OPTS** for additional JVM logging if needed\n\n`;
+        
+      } else {
+        result += `**Runtime:** ${runtime}\n\n`;
+        result += `General recommendations:\n`;
+        result += `- Ensure your app writes logs to stdout/stderr\n`;
+        result += `- Avoid writing to local files\n`;
+        result += `- Use structured logging (JSON) when possible for better querying\n`;
+        result += `- Set appropriate log levels via environment variables\n\n`;
+      }
+      
+      // App settings check
+      result += `### Suggested App Settings\n\n`;
+      result += `| Setting | Purpose |\n`;
+      result += `|---------|--------|\n`;
+      if (runtimeLower.includes('python')) {
+        result += `| \`PYTHONUNBUFFERED=1\` | Disable output buffering |\n`;
+      }
+      if (runtimeLower.includes('node')) {
+        result += `| \`LOG_LEVEL=info\` | Control logging verbosity |\n`;
+      }
+      result += `| \`WEBSITE_HTTPLOGGING_RETENTION_DAYS=7\` | Retain HTTP logs |\n`;
+      result += `| \`DIAGNOSTICS_AZUREBLOBRETENTIONINDAYS=7\` | Retain blob diagnostics |\n`;
+      
+      return result;
     }
 
     default:

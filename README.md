@@ -11,6 +11,8 @@ This MCP server allows AI assistants (VS Code Copilot, Claude, etc.) to:
 - **Analyze errors** — aggregate HTTP 5xx errors, identify patterns
 - **Find slow requests** — queries exceeding latency thresholds
 - **View deployments** — recent deployment history
+- **Diagnose deployment issues** — correlate deploys with startup failures, errors, and first requests
+- **Check logging setup** — runtime-specific recommendations for Python, Node.js, .NET, Java
 - **Correlate events** — find all logs around a specific timestamp
 - **Investigate issues** — diagnose why containers stopped, identify root causes
 
@@ -55,7 +57,7 @@ Create `.vscode/mcp.json` in your workspace:
 }
 ```
 
-After creating the file, reload VS Code. You should see "Start | 13 tools" appear in the mcp.json file. Click "Start" to activate the server.
+After creating the file, reload VS Code. You should see "Start | 15 tools" appear in the mcp.json file. Click "Start" to activate the server.
 
 ### Claude Desktop
 
@@ -123,6 +125,8 @@ npm run dev
 |------|-------------|-------------|
 | `summarize_errors` | Aggregate and analyze error patterns | ✅ |
 | `correlate_events` | Find all events around a timestamp | ✅ |
+| `diagnose_deployment` | Diagnose issues after a deployment (startup, errors, first requests) | Partial |
+| `check_logging_setup` | Check logging config and get runtime-specific recommendations | ❌ |
 
 ## Example Conversations
 
@@ -209,6 +213,71 @@ az webapp config set --name your-app-name \
 
 **Assistant:** *calls correlate_events*
 > Shows all events (HTTP, platform, app logs) around that timestamp
+
+---
+
+### Diagnosing a Broken Deployment
+
+**User:** "My app broke after the last deployment. What went wrong?"
+
+**Assistant:** *calls diagnose_deployment*
+
+> ## Deployment Diagnosis
+>
+> **Deployment:** 2026-01-28T16:01:22Z
+> **Status:** Success
+>
+> ### Platform Events
+> ⚠️ **Errors detected:**
+> - `Container failed to start within the timeout period`
+>
+> **Startup sequence:**
+> - Container start method called
+> - Pulling image: appsvc/node:20-lts
+> - Container creating...
+> - Health probe failed after 230 seconds
+>
+> ### Application Logs
+> ⚠️ **Application errors:**
+> ```
+> Error: Cannot find module 'express'
+> ```
+>
+> ### Diagnosis Summary
+> The deployment succeeded but the app crashed on startup due to a missing dependency. Check that `npm install` ran during deployment or add `express` to package.json.
+
+---
+
+### Checking Logging Setup
+
+**User:** "Why are my Python logs not showing up?"
+
+**Assistant:** *calls check_logging_setup*
+
+> ## Logging Setup Check
+>
+> **Runtime:** PYTHON|3.11
+>
+> ### Diagnostic Settings
+> ✅ Log Analytics: Enabled
+>
+> ### Runtime-Specific Recommendations
+>
+> **Python detected**
+>
+> Python logging requires explicit configuration:
+>
+> ```python
+> import logging
+> import sys
+>
+> logging.basicConfig(
+>     level=logging.INFO,
+>     handlers=[logging.StreamHandler(sys.stdout)]
+> )
+> ```
+>
+> Also add `PYTHONUNBUFFERED=1` to your app settings to prevent output buffering.
 
 ## Constraints & Limitations
 
@@ -323,7 +392,7 @@ The MCP tools (executable calls) + Agent Skill (knowledge/prompts) work together
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                           MCP Server (Node.js)                           │
 │  Tools: get_app_info, check_diagnostics, query_logs, get_recent_logs,    │
-│         get_http_errors, get_slow_requests, get_deployments, etc.        │
+│         get_http_errors, diagnose_deployment, check_logging_setup, etc.  │
 └──────────────────────────────────────┬───────────────────────────────────┘
                                        │ Azure SDKs
           ┌────────────────────────────┼────────────────────────────────┐

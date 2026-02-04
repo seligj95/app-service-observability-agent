@@ -33,6 +33,8 @@ Follow this systematic approach when investigating App Service issues:
 ### Step 4: Deep Dive
 - Use `query_logs` with targeted KQL for specific investigation
 - Use `correlate_events` to see all activity around a problem timestamp
+- Use `diagnose_deployment` when issues started after a deployment
+- Use `check_logging_setup` if logs seem empty or incomplete
 
 ## Common Error Patterns and Root Causes
 
@@ -133,15 +135,58 @@ AppServiceHTTPLogs
 
 ### Deployment Failures
 
-**Symptoms:** Deployment shows failed, app not updated
+**Symptoms:** Deployment shows failed, app not updated, or app broken after deploy
 
 **Investigation:**
-1. Call `get_deployments` to see status
-2. Check platform logs around deployment time
-3. Common causes:
+1. Call `diagnose_deployment` — this is the fastest path for post-deployment issues
+2. If more detail needed, call `get_deployments` to see status
+3. Check platform logs around deployment time
+4. Common causes:
    - Build failure (check deployment logs)
    - Startup failure after deploy (new code crashes)
    - Slot swap failure (staging slot unhealthy)
+   - Missing environment variables or dependencies
+
+**Using diagnose_deployment:**
+The `diagnose_deployment` tool automatically:
+- Finds the most recent deployment (or specify index for older deployments)
+- Queries platform logs for startup issues
+- Checks console logs for application errors
+- Shows first HTTP requests after deploy (to detect if app is responding)
+- Identifies errors, crashes, OOM events
+
+**Example usage:**
+- `diagnose_deployment` — check most recent deployment
+- `diagnose_deployment` with `deploymentIndex: 1` — check second most recent
+
+### Logging Setup Issues
+
+**Symptoms:** Logs are empty, missing expected output, "no logs found"
+
+**Investigation:**
+1. Call `check_logging_setup` first — provides runtime-specific guidance
+2. Common issues by runtime:
+
+**Python:**
+- Python's logging module does NOT output by default
+- Must configure handlers explicitly
+- Add `PYTHONUNBUFFERED=1` to prevent buffering
+- Gunicorn needs `--access-logfile -` flag
+
+**Node.js:**
+- console.log/error work out of the box
+- Ensure no file transports in winston/pino
+- Check LOG_LEVEL environment variable
+
+**.NET:**
+- ILogger<T> usually works by default
+- Check log level configuration in appsettings.json
+- Ensure no file sinks in Serilog/NLog
+
+**Java:**
+- Configure Logback to use ConsoleAppender
+- Avoid FileAppender
+- Check Spring Boot logging.level.root setting
 
 ## App Service Plan SKU Reference
 
