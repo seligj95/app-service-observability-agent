@@ -41,6 +41,11 @@ export async function runServer(): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     
+    console.error(`[appservice-logs-mcp] Tool called: ${name}`);
+    if (args && Object.keys(args).length > 0) {
+      console.error(`[appservice-logs-mcp] Arguments: ${JSON.stringify(args)}`);
+    }
+    
     try {
       const result = await executeTool(name, args || {}, authManager);
       return {
