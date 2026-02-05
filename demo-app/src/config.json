@@ -1,0 +1,9 @@
+{
+  "appName": "Demo Todo App",
+  "version": "1.0.0",
+  "maxTodos": 100,
+  "features": {
+    "enableLogging": true,
+    "enableMetrics": true
+  }
+}

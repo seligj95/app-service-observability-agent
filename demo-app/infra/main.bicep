@@ -65,10 +65,6 @@ module web './modules/app-service.bicep' = {
         name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
         value: 'true'
       }
-      {
-        name: 'ENABLE_BUG'
-        value: 'false'
-      }
     ]
   }
 }

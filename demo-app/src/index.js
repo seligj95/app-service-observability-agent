@@ -2,15 +2,11 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Check if bug mode is enabled via environment variable
-const ENABLE_BUG = process.env.ENABLE_BUG === 'true';
-
-// This will crash the app if ENABLE_BUG is true
-// The file config-v2.json doesn't exist!
-if (ENABLE_BUG) {
-  console.log('[DEMO] Bug mode enabled - attempting to load missing config...');
-  const config = require('./config-v2.json');
-}
+// Load app configuration
+// BUG DEMO: Change 'config.json' to 'config-v2.json' to simulate a deployment bug
+//           (config-v2.json doesn't exist, causing the app to crash on startup)
+const config = require('./config-dne.json');
+console.log(`[INFO] Loaded config for ${config.appName} v${config.version}`);
 
 // Simple in-memory todo storage
 let todos = [
@@ -31,9 +27,8 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   console.log('[INFO] Home page requested');
   res.json({
-    name: 'Demo Todo App',
-    version: '1.0.0',
-    bugMode: ENABLE_BUG,
+    name: config.appName,
+    version: config.version,
     endpoints: {
       'GET /': 'This info',
       'GET /health': 'Health check',
@@ -120,6 +115,5 @@ app.delete('/todos/:id', (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`[INFO] Demo Todo App listening on port ${port}`);
-  console.log(`[INFO] Bug mode: ${ENABLE_BUG ? 'ENABLED' : 'disabled'}`);
+  console.log(`[INFO] ${config.appName} listening on port ${port}`);
 });

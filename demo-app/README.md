@@ -43,45 +43,56 @@ Show normal operation with AlwaysOn health checks.
 - "Show me recent logs"
 - "Any issues with my app?"
 
-### Scenario 2: Deployment Correlation (Bug Mode)
+### Scenario 2: Deployment Correlation (Bug Demo)
 
-1. **Enable the bug** - Set `ENABLE_BUG=true` in App Service configuration:
-   ```bash
-   az webapp config appsettings set \
-     --resource-group <rg-name> \
-     --name <app-name> \
-     --settings ENABLE_BUG=true
-   ```
+This is the "wow factor" demo - correlating errors with a bad deployment.
 
-2. **Wait for errors** - The app will crash on startup trying to load a missing `config-v2.json` file.
+#### Step 1: Deploy the working app
+```bash
+cd demo-app
+azd up
+```
+Verify it's working: "Tell me about my app", "Show me recent logs"
 
-3. **Demo the correlation:**
-   - "My app is having issues"
-   - "When did the errors start?"
-   - "What deployments happened recently?"
-   - "Correlate errors with deployments"
+#### Step 2: Introduce a bug (typo in filename)
 
-4. **Fix the bug:**
-   ```bash
-   az webapp config appsettings set \
-     --resource-group <rg-name> \
-     --name <app-name> \
-     --settings ENABLE_BUG=false
-   ```
+Edit `src/index.js` line 7 - change:
+```javascript
+const config = require('./config.json');
+```
+to:
+```javascript
+const config = require('./config-v2.json');  // This file doesn't exist!
+```
+
+#### Step 3: Deploy the broken version
+```bash
+azd deploy
+```
+
+#### Step 4: Demo the correlation
+Wait 2-3 minutes for logs to flow, then:
+- "My app is having issues"
+- "When did the errors start?"
+- "Correlate errors with deployments"
+
+The agent will show that errors started right after the deployment!
+
+#### Step 5: Fix and redeploy
+Revert the change in `src/index.js` back to `config.json` and run:
+```bash
+azd deploy
+```
 
 ## Bug Explanation
 
-When `ENABLE_BUG=true`, the app attempts to:
+The app loads configuration at startup:
 ```javascript
-const config = require('./config-v2.json');
+const config = require('./config.json');  // Works - file exists
+const config = require('./config-v2.json');  // Crashes - file doesn't exist!
 ```
 
-This file doesn't exist, causing the app to crash immediately on startup with:
-```
-Error: Cannot find module './config-v2.json'
-```
-
-This simulates a common deployment issue where code references a missing file or module.
+This simulates a common deployment issue: a typo or refactoring mistake that references a missing file.
 
 ## API Endpoints
 
